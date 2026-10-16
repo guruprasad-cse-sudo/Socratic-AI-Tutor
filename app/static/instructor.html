@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Instructor view · Socratic Project Tutor</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Fraunces:opsz,wght@9..144,600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+  <style>
+    .wrap { max-width: 960px; margin: 32px auto; padding: 0 16px; display: grid; gap: 16px; }
+    h1 { font-family: var(--serif); margin: 0; font-size: 26px; }
+    h2 { font-size: 16px; margin: 0 0 10px; }
+    .stats { display: flex; gap: 12px; flex-wrap: wrap; }
+    .stat { background: var(--paper); border-radius: var(--radius); padding: 10px 14px; min-width: 110px; }
+    .stat b { display: block; font-size: 22px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    td, th { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .card { padding: 20px; }
+    #report { display: grid; gap: 16px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="mark">?</span> Instructor view</div>
+    <a href="/" class="link">Student view</a>
+  </header>
+  <div class="wrap">
+    <div class="card">
+      <h1>Student progress</h1>
+      <label>Project<select id="pick"></select></label>
+    </div>
+    <div id="report"></div>
+  </div>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function init() {
+  const projects = await fetch("/api/projects").then((r) => r.json());
+  if (!projects.length) { $("#report").innerHTML = '<div class="card muted">No student projects yet.</div>'; return; }
+  $("#pick").innerHTML = projects.map((p) => `<option value="${p.id}">${esc(p.student_name)}: ${esc(p.brief.slice(0, 60))}</option>`).join("");
+  $("#pick").addEventListener("change", load);
+  load();
+}
+
+async function load() {
+  const r = await fetch(`/api/projects/${$("#pick").value}/report`).then((x) => x.json());
+  const v = r.verdicts;
+  const stages = r.stages.map((s) => `<tr><td><b>${esc(s.name)}</b><br><span class="muted small">${s.status}</span></td><td>${
+    s.concepts.map((c) => `${c.mastered ? "✓" : c.needs_review ? "⚑" : "·"} ${esc(c.name)}${c.needs_review ? ' <span class="tag hint">revisit</span>' : ""} <span class="muted small">(tier ${c.highest_tier_passed}/${c.required_tier})</span>`).join("<br>")}</td></tr>`).join("");
+  const mis = r.misconceptions.length
+    ? r.misconceptions.map((m) => `<tr><td>${esc(m.concept)}</td><td>${m.tier}</td><td>${esc(m.misconception)}</td></tr>`).join("")
+    : '<tr><td colspan="3" class="muted">None recorded</td></tr>';
+  const sig = r.integrity_signals.length
+    ? r.integrity_signals.map((s) => `<tr><td><span class="tag hint">${esc(s.kind)}</span></td><td>${esc(s.detail)}</td><td class="small"><b>Q:</b> ${esc(s.question)}<br><b>A:</b> ${esc(s.answer)}</td></tr>`).join("")
+    : '<tr><td colspan="3" class="muted">No signals</td></tr>';
+  $("#report").innerHTML = `
+    <div class="card"><div class="stats">
+      <div class="stat"><b>${r.answers}</b>answers</div>
+      <div class="stat"><b>${v.pass}</b>pass</div><div class="stat"><b>${v.partial}</b>partial</div>
+      <div class="stat"><b>${v.misconception}</b>misconception</div><div class="stat"><b>${v.evasive}</b>evasive</div>
+    </div></div>
+    <div class="card"><h2>Mastery by stage</h2><p class="muted small">Pace: ${esc(r.pace)}. ⚑ revisit = the student ran out of attempts, so the tutor explained the concept and moved on. Good topics for the viva.</p><table>${stages}</table></div>
+    <div class="card"><h2>Misconceptions</h2><table><tr><th>Concept</th><th>Tier</th><th>Wrong belief</th></tr>${mis}</table></div>
+    <div class="card"><h2>Integrity signals</h2><p class="muted small">${esc(r.note)}</p>
+      <table><tr><th>Signal</th><th>Detail</th><th>Exchange</th></tr>${sig}</table></div>`;
+}
+init();
+</script>
+</body>
+</html>

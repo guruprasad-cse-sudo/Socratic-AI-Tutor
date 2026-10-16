@@ -1,0 +1,5 @@
+config.env
+.env
+tutor.db
+__pycache__/
+.venv/
