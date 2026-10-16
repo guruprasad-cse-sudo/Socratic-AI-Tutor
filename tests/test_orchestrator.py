@@ -121,7 +121,8 @@ def test_integrity_signals(db, llm):
     assert report["integrity_signals"]
 
 
-def test_http_api(tmp_path):
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
     engine = make_engine(f"sqlite:///{tmp_path}/t.db")
     init_db(engine)
     Local = sessionmaker(bind=engine, expire_on_commit=False)
@@ -133,21 +134,75 @@ def test_http_api(tmp_path):
         finally:
             s.close()
 
+    monkeypatch.setattr(config, "INSTRUCTOR_PASSWORD", "teach-secret")
     main.app.dependency_overrides[main.get_db] = override_db
     main.app.dependency_overrides[main.get_llm] = lambda: MockClient()
-    client = TestClient(main.app)
+    yield TestClient(main.app)
+    main.app.dependency_overrides.clear()
+
+
+TEACHER = {"X-Instructor-Password": "teach-secret"}
+
+
+def test_http_api(client):
     r = client.post("/api/projects", json={"student_name": "Ravi", "brief": BRIEF})
     assert r.status_code == 201
-    pid = r.json()["id"]
-    r = client.post(f"/api/projects/{pid}/answer", json={"text": LONG, "latency_ms": 60000, "pasted_chars": 0})
+    pid, token = r.json()["id"], r.json()["access_token"]
+    me = {"X-Project-Token": token}
+    r = client.post(f"/api/projects/{pid}/answer", json={"text": LONG, "latency_ms": 60000, "pasted_chars": 0},
+                    headers=me)
     assert r.status_code == 200 and r.json()["tier"] == 3
-    r = client.put(f"/api/projects/{pid}/documents/requirements", json={"content": "# Req"})
+    assert "access_token" not in r.json()
+    r = client.put(f"/api/projects/{pid}/documents/requirements", json={"content": "# Req"}, headers=me)
     assert r.status_code == 200
-    r = client.put(f"/api/projects/{pid}/documents/hld", json={"content": "x"})
+    r = client.put(f"/api/projects/{pid}/documents/hld", json={"content": "x"}, headers=me)
     assert r.status_code == 403
-    assert client.get(f"/api/projects/{pid}/report").status_code == 200
+    assert client.get(f"/api/projects/{pid}/report", headers=TEACHER).status_code == 200
     assert client.get("/").status_code == 200
-    main.app.dependency_overrides.clear()
+
+
+def test_students_only_reach_their_own_project(client):
+    a = client.post("/api/projects", json={"student_name": "Asha", "brief": BRIEF}).json()
+    b = client.post("/api/projects", json={"student_name": "Ravi", "brief": BRIEF}).json()
+    asha = {"X-Project-Token": a["access_token"]}
+    assert client.get(f"/api/projects/{a['id']}", headers=asha).status_code == 200
+    # Another student's project, a missing token and a wrong token all look like "not found".
+    assert client.get(f"/api/projects/{b['id']}", headers=asha).status_code == 404
+    assert client.get(f"/api/projects/{b['id']}").status_code == 404
+    assert client.post(f"/api/projects/{b['id']}/answer", json={"text": "hi"}, headers=asha).status_code == 404
+    assert client.put(f"/api/projects/{b['id']}/documents/requirements", json={"content": "x"},
+                      headers=asha).status_code == 404
+    # Students can't list projects or read reports, even their own.
+    assert client.get("/api/projects", headers=asha).status_code == 401
+    assert client.get(f"/api/projects/{a['id']}/report", headers=asha).status_code == 401
+
+
+def test_instructor_password(client, monkeypatch):
+    client.post("/api/projects", json={"student_name": "Asha", "brief": BRIEF})
+    assert client.get("/api/projects").status_code == 401
+    assert client.get("/api/projects", headers={"X-Instructor-Password": "wrong"}).status_code == 401
+    r = client.get("/api/projects", headers=TEACHER)
+    assert r.status_code == 200 and len(r.json()) == 1
+    assert "access_token" not in r.json()[0]
+    pid = r.json()[0]["id"]
+    assert client.get(f"/api/projects/{pid}", headers=TEACHER).status_code == 200
+    # With no password configured, the instructor view stays locked rather than open.
+    monkeypatch.setattr(config, "INSTRUCTOR_PASSWORD", "")
+    assert client.get("/api/projects", headers=TEACHER).status_code == 503
+    assert client.get("/api/projects", headers={"X-Instructor-Password": ""}).status_code == 503
+
+
+def test_old_projects_get_access_tokens(tmp_path):
+    from sqlalchemy import text
+    engine = make_engine(f"sqlite:///{tmp_path}/old.db")
+    init_db(engine)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO projects (student_name, brief, stage_index, tier, hint_rung, completed, created_at) "
+                          "VALUES ('Old', 'an old project brief', 0, 1, 0, 0, CURRENT_TIMESTAMP)"))
+        conn.execute(text("UPDATE projects SET access_token = NULL"))
+    init_db(engine)
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM projects WHERE access_token IS NULL")).scalar() == 0
 
 
 def test_claude_message_merging():

@@ -1,7 +1,8 @@
+import hmac
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -21,6 +22,8 @@ async def lifespan(_app: FastAPI):
     print(f"  API key:    {config.key_hint()}")
     if config.key_problem():
         print(f"  WARNING:    {config.key_problem()}")
+    if not config.INSTRUCTOR_PASSWORD:
+        print("  WARNING:    INSTRUCTOR_PASSWORD is not set, so the instructor view is locked.")
     print()
     yield
 
@@ -71,11 +74,35 @@ def get_llm() -> LLMClient:
     return _llm
 
 
-def _project(db: Session, project_id: int) -> Project:
+def _is_instructor(password: str | None) -> bool:
+    if not config.INSTRUCTOR_PASSWORD or not password:
+        return False
+    return hmac.compare_digest(password.encode(), config.INSTRUCTOR_PASSWORD.encode())
+
+
+def require_instructor(x_instructor_password: str | None = Header(default=None)) -> None:
+    if not config.INSTRUCTOR_PASSWORD:
+        raise HTTPException(503, "The instructor view is locked: set INSTRUCTOR_PASSWORD on the server first.")
+    if not _is_instructor(x_instructor_password):
+        raise HTTPException(401, "Wrong instructor password.")
+
+
+def _project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    x_project_token: str | None = Header(default=None),
+    x_instructor_password: str | None = Header(default=None),
+) -> Project:
+    """The project, if the caller holds its access token or is the instructor.
+    Any other caller gets 404, so project numbers can't be probed."""
     project = db.get(Project, project_id)
-    if project is None:
-        raise HTTPException(404, "Project not found")
-    return project
+    if project is not None and (
+        _is_instructor(x_instructor_password)
+        or (x_project_token and project.access_token
+            and hmac.compare_digest(x_project_token.encode(), project.access_token.encode()))
+    ):
+        return project
+    raise HTTPException(404, "Project not found")
 
 
 class NewProject(BaseModel):
@@ -109,7 +136,7 @@ def health():
             "key_problem": config.key_problem()}
 
 
-@app.get("/api/projects")
+@app.get("/api/projects", dependencies=[Depends(require_instructor)])
 def list_projects(db: Session = Depends(get_db)):
     projects = db.scalars(select(Project).order_by(Project.id.desc())).all()
     return [
@@ -126,17 +153,18 @@ def create_project(body: NewProject, db: Session = Depends(get_db), llm: LLMClie
     except Exception as e:  # LLM/API failure
         db.rollback()
         raise HTTPException(502, _friendly(e)) from e
-    return orchestrator.project_state(db, project)
+    # The token is returned only here; the student's browser keeps it to reopen the project.
+    return {**orchestrator.project_state(db, project), "access_token": project.access_token}
 
 
 @app.get("/api/projects/{project_id}")
-def get_project(project_id: int, db: Session = Depends(get_db)):
-    return orchestrator.project_state(db, _project(db, project_id))
+def get_project(project: Project = Depends(_project), db: Session = Depends(get_db)):
+    return orchestrator.project_state(db, project)
 
 
 @app.post("/api/projects/{project_id}/answer")
-def post_answer(project_id: int, body: Answer, db: Session = Depends(get_db), llm: LLMClient = Depends(get_llm)):
-    project = _project(db, project_id)
+def post_answer(body: Answer, project: Project = Depends(_project), db: Session = Depends(get_db),
+                llm: LLMClient = Depends(get_llm)):
     try:
         orchestrator.handle_answer(db, llm, project, body.text, body.latency_ms, body.pasted_chars)
     except ValueError as e:
@@ -150,8 +178,8 @@ def post_answer(project_id: int, body: Answer, db: Session = Depends(get_db), ll
 
 
 @app.put("/api/projects/{project_id}/documents/{stage_id}")
-def put_document(project_id: int, stage_id: str, body: DocumentIn, db: Session = Depends(get_db)):
-    project = _project(db, project_id)
+def put_document(stage_id: str, body: DocumentIn, project: Project = Depends(_project),
+                 db: Session = Depends(get_db)):
     try:
         doc = orchestrator.save_document(db, project, stage_id, body.content)
     except ValueError as e:
@@ -159,6 +187,6 @@ def put_document(project_id: int, stage_id: str, body: DocumentIn, db: Session =
     return {"stage_id": doc.stage_id, "content": doc.content}
 
 
-@app.get("/api/projects/{project_id}/report")
-def get_report(project_id: int, db: Session = Depends(get_db)):
-    return orchestrator.instructor_report(db, _project(db, project_id))
+@app.get("/api/projects/{project_id}/report", dependencies=[Depends(require_instructor)])
+def get_report(project: Project = Depends(_project), db: Session = Depends(get_db)):
+    return orchestrator.instructor_report(db, project)

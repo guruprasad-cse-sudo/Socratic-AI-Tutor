@@ -20,6 +20,11 @@ paste your key after `ANTHROPIC_API_KEY=`, save, and restart the server. The top
 
 Open http://localhost:8000 for the student view and http://localhost:8000/instructor for the instructor view.
 
+**Instructor password:** add `INSTRUCTOR_PASSWORD=...` to `config.env` (or the host's environment variables when
+deployed). The instructor view and reports stay locked until it is set. Students never see the instructor view:
+each project gets a secret access key that is stored in the browser that started it, so a student can open only
+their own projects, and only from that browser. Instructors can open every project.
+
 **No API key?** The app starts in *mock mode* (shown in the top bar). The mock tutor asks the seed questions and
 grades by answer length (25+ words = pass, 8–24 = partial, shorter = misconception, "give me the answer" = evasive),
 so you can click through every stage and gate without spending tokens.
@@ -73,12 +78,15 @@ Thresholds are configurable in `config.env`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/projects` | Start a project `{student_name, brief}` → state with the first question |
-| `GET` | `/api/projects` | List projects |
+| `POST` | `/api/projects` | Start a project `{student_name, brief}` → state with the first question and its `access_token` |
+| `GET` | `/api/projects` | List projects (instructor only) |
 | `GET` | `/api/projects/{id}` | Full state: stages, mastery, transcript, documents, releases |
 | `POST` | `/api/projects/{id}/answer` | Answer `{text, latency_ms, pasted_chars}` → updated state |
 | `PUT` | `/api/projects/{id}/documents/{stage_id}` | Save a design document (403 until that stage's template is released) |
-| `GET` | `/api/projects/{id}/report` | Instructor report: mastery, verdicts, misconceptions, integrity signals |
+| `GET` | `/api/projects/{id}/report` | Instructor report: mastery, verdicts, misconceptions, integrity signals (instructor only) |
+
+Project routes need the `X-Project-Token` header (the project's access token) or `X-Instructor-Password`;
+anything else gets 404. Instructor-only routes need `X-Instructor-Password`.
 
 If the Claude API call fails, nothing is saved and the endpoint returns 502 so the student can resend.
 
@@ -98,7 +106,8 @@ tests/             pytest suite using the mock client
 
 ## Not in this MVP (from the design doc)
 
-- Student accounts and authentication — anyone with the URL can open any project. Add auth before using with a class.
+- Student accounts. A project can be reopened only from the browser that started it, and the instructor view uses
+  one shared password. Add real logins before using with a full class.
 - Implementation stages (backend, frontend, testing, deployment) and fill-the-gap code releases.
 - Viva generator, spaced review, and the interview practice mode (e.g. "Design an SMS notification system").
 - React frontend — this MVP uses plain HTML/JS so it runs without a build step.

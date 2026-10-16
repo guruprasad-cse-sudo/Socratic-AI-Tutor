@@ -18,8 +18,27 @@ function md(s) {
     .replace(/\n/g, "<br>");
 }
 
+// Projects this browser started: [{id, token, name, brief, stage_index, completed}].
+// The token is the only way to open a project, so students see just their own work.
+function myProjects() {
+  try { return JSON.parse(localStorageGet("myProjects") || "[]"); } catch { return []; }
+}
+function rememberProject(s, token) {
+  const list = myProjects();
+  const old = list.find((p) => p.id === s.id);
+  const entry = { id: s.id, token: token || old?.token, name: s.student_name, brief: (s.brief || "").slice(0, 120),
+    stage_index: (s.stages || []).filter((st) => st.status === "done").length, completed: s.completed };
+  localStorageSet("myProjects", JSON.stringify([entry, ...list.filter((p) => p.id !== s.id)]));
+}
+function tokenFor(id) {
+  return myProjects().find((p) => String(p.id) === String(id))?.token || "";
+}
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  const m = path.match(/^\/api\/projects\/(\d+)/);
+  const headers = { "Content-Type": "application/json" };
+  if (m) headers["X-Project-Token"] = tokenFor(m[1]);
+  const res = await fetch(path, { ...opts, headers });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.detail ? (typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail)) : res.statusText);
   return body;
@@ -41,10 +60,10 @@ async function showStart() {
 }
 
 async function loadProjectList() {
-  const projects = await api("/api/projects").catch(() => []);
+  const projects = myProjects().filter((p) => p.token);
   $("#resume").hidden = !projects.length;
   $("#project-list").innerHTML = projects
-    .map((p) => `<li><button data-id="${p.id}"><strong>${esc(p.student_name)}</strong>
+    .map((p) => `<li><button data-id="${p.id}"><strong>${esc(p.name || "")}</strong>
       <span class="muted small"> · ${p.completed ? "design complete" : "stage " + (p.stage_index + 1) + " of 6"}</span><br>
       <span class="small">${esc(p.brief)}</span></button></li>`)
     .join("");
@@ -85,6 +104,7 @@ $("#start-form").addEventListener("submit", async (e) => {
       method: "POST",
       body: JSON.stringify({ student_name: $("#student-name").value, brief: $("#brief").value }),
     });
+    rememberProject(s, s.access_token);
     showWorkspace(s);
   } catch (err) {
     alert(err.message);
@@ -104,6 +124,7 @@ async function openProject(id) {
 
 function showWorkspace(s) {
   localStorageSet("projectId", String(s.id));
+  rememberProject(s);
   $("#start").hidden = true;
   $("#workspace").hidden = false;
   $("#projects-btn").hidden = false;

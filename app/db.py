@@ -1,3 +1,4 @@
+import secrets
 from datetime import datetime, timezone
 
 from sqlalchemy import (
@@ -10,6 +11,11 @@ from .config import DATABASE_URL
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def new_token() -> str:
+    """Unguessable key that lets a student's browser open only their own project."""
+    return secrets.token_urlsafe(24)
 
 
 class Base(DeclarativeBase):
@@ -27,6 +33,7 @@ class Project(Base):
     tier: Mapped[int] = mapped_column(Integer, default=1)
     hint_rung: Mapped[int] = mapped_column(Integer, default=0)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    access_token: Mapped[str | None] = mapped_column(String(64), default=new_token)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     attempts: Mapped[list["Attempt"]] = relationship(back_populates="project", order_by="Attempt.id")
@@ -125,3 +132,13 @@ def init_db(eng=None) -> None:
     if "needs_review" not in cols:
         with eng.begin() as conn:
             conn.execute(text("ALTER TABLE mastery ADD COLUMN needs_review BOOLEAN NOT NULL DEFAULT FALSE"))
+
+    cols = {c["name"] for c in inspect(eng).get_columns("projects")}
+    if "access_token" not in cols:
+        with eng.begin() as conn:
+            conn.execute(text("ALTER TABLE projects ADD COLUMN access_token VARCHAR(64)"))
+    # Projects created before access tokens existed get one, so no project is left openable by id alone.
+    with eng.begin() as conn:
+        ids = [r[0] for r in conn.execute(text("SELECT id FROM projects WHERE access_token IS NULL"))]
+        for pid in ids:
+            conn.execute(text("UPDATE projects SET access_token = :t WHERE id = :i"), {"t": new_token(), "i": pid})

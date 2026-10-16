@@ -62,6 +62,10 @@ TUTOR_MODEL = os.getenv("TUTOR_MODEL") or "claude-sonnet-5-5"
 EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL") or "claude-haiku-5-5"
 DATABASE_URL = os.getenv("DATABASE_URL") or f"sqlite:///{ROOT / 'tutor.db'}"
 
+# Password for the instructor view and reports. While it is empty the instructor view stays locked,
+# so a deployed app is never left open by accident. Set it in config.env (local) or on the host (Render).
+INSTRUCTOR_PASSWORD = (os.getenv("INSTRUCTOR_PASSWORD") or "").strip()
+
 # Hint ladder: after this many failed attempts on one question, the tutor explains fully.
 MAX_HINT_RUNG = 4
 

@@ -24,9 +24,18 @@
     <div class="brand"><span class="mark">?</span> Instructor view</div>
     <a href="/" class="link">Student view</a>
   </header>
-  <div class="wrap">
+  <div class="wrap" id="login" hidden>
+    <form class="card" id="login-form">
+      <h1>Instructor sign-in</h1>
+      <p class="muted small" id="login-msg">Enter the instructor password to see student progress.</p>
+      <label>Password<input id="password" type="password" required autocomplete="current-password"></label>
+      <p><button class="btn" type="submit">Sign in</button></p>
+    </form>
+  </div>
+  <div class="wrap" id="main" hidden>
     <div class="card">
       <h1>Student progress</h1>
+      <p class="small"><a href="#" id="signout" class="link">Sign out</a></p>
       <label>Project<select id="pick"></select></label>
     </div>
     <div id="report"></div>
@@ -35,16 +44,49 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+// The password lives only in this tab's session storage and is sent with each request.
+function pw() { try { return sessionStorage.getItem("instructorPassword") || ""; } catch { return ""; } }
+function setPw(v) { try { v ? sessionStorage.setItem("instructorPassword", v) : sessionStorage.removeItem("instructorPassword"); } catch {} }
+let memoryPw = "";
+
+async function get(path) {
+  const r = await fetch(path, { headers: { "X-Instructor-Password": pw() || memoryPw } });
+  const body = await r.json().catch(() => ({}));
+  if (r.status === 401 || r.status === 503) { showLogin(body.detail); throw new Error(body.detail); }
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+
+function showLogin(msg) {
+  setPw(""); memoryPw = "";
+  $("#main").hidden = true;
+  $("#login").hidden = false;
+  if (msg) $("#login-msg").textContent = msg;
+  $("#password").value = "";
+  $("#password").focus();
+}
+
+$("#login-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  memoryPw = $("#password").value;
+  setPw(memoryPw);
+  init().catch(() => {});
+});
+$("#signout").addEventListener("click", (e) => { e.preventDefault(); showLogin("Signed out."); });
+
 async function init() {
-  const projects = await fetch("/api/projects").then((r) => r.json());
+  if (!pw() && !memoryPw) { showLogin(); return; }
+  const projects = await get("/api/projects");
+  $("#login").hidden = true;
+  $("#main").hidden = false;
   if (!projects.length) { $("#report").innerHTML = '<div class="card muted">No student projects yet.</div>'; return; }
   $("#pick").innerHTML = projects.map((p) => `<option value="${p.id}">${esc(p.student_name)}: ${esc(p.brief.slice(0, 60))}</option>`).join("");
-  $("#pick").addEventListener("change", load);
+  $("#pick").onchange = load;
   load();
 }
 
 async function load() {
-  const r = await fetch(`/api/projects/${$("#pick").value}/report`).then((x) => x.json());
+  const r = await get(`/api/projects/${$("#pick").value}/report`);
   const v = r.verdicts;
   const stages = r.stages.map((s) => `<tr><td><b>${esc(s.name)}</b><br><span class="muted small">${s.status}</span></td><td>${
     s.concepts.map((c) => `${c.mastered ? "✓" : c.needs_review ? "⚑" : "·"} ${esc(c.name)}${c.needs_review ? ' <span class="tag hint">revisit</span>' : ""} <span class="muted small">(tier ${c.highest_tier_passed}/${c.required_tier})</span>`).join("<br>")}</td></tr>`).join("");
@@ -65,7 +107,7 @@ async function load() {
     <div class="card"><h2>Integrity signals</h2><p class="muted small">${esc(r.note)}</p>
       <table><tr><th>Signal</th><th>Detail</th><th>Exchange</th></tr>${sig}</table></div>`;
 }
-init();
+init().catch(() => {});
 </script>
 </body>
 </html>
