@@ -32,11 +32,13 @@ def start(db, llm):
     return orchestrator.start_project(db, llm, "Asha", BRIEF)
 
 
-def test_start_releases_first_template_and_asks_tier1(db, llm):
+@pytest.mark.parametrize("pace, tier", [("thorough", 1), ("standard", 2), ("quick", 2)])
+def test_start_releases_first_template_at_pace_start_tier(db, llm, monkeypatch, pace, tier):
+    monkeypatch.setattr(config, "PACE", pace)
     p = start(db, llm)
     state = orchestrator.project_state(db, p)
     assert state["stages"][0]["status"] == "current"
-    assert state["tier"] == 1
+    assert state["tier"] == tier
     assert [r["kind"] for r in state["releases"]] == ["template"]
     assert state["transcript"][-1]["role"] == "tutor"
 
@@ -51,14 +53,27 @@ def test_evasive_never_climbs_hint_ladder(db, llm):
     assert all(r["kind"] == "template" for r in state["releases"])  # no checklist unlocked
 
 
-def test_hint_ladder_then_explain(db, llm):
+@pytest.mark.parametrize("pace, hints", [
+    ("quick", ["HINT_1"]),
+    ("standard", ["HINT_1", "HINT_2"]),
+    ("thorough", ["HINT_1", "HINT_2", "HINT_3", "HINT_4"]),
+])
+def test_hint_ladder_then_explain_and_move_on(db, llm, monkeypatch, pace, hints):
+    """Each wrong answer climbs one hint rung. When the pace's attempts run out, the tutor
+    explains the concept, flags it for the instructor, and moves to the next concept."""
+    monkeypatch.setattr(config, "PACE", pace)
     p = start(db, llm)
+    first = p.concept_id
     modes = []
-    for _ in range(config.MAX_HINT_RUNG + 1):
+    for _ in range(config.PACES[pace]["attempts"]):
         nxt = orchestrator.handle_answer(db, llm, p, "users")  # too short -> misconception
         modes.append(nxt.mode)
-    assert modes == ["HINT_1", "HINT_2", "HINT_3", "HINT_4", "EXPLAIN"]
+    assert modes == hints + ["QUESTION"]
     assert p.hint_rung == 0
+    assert p.concept_id == STAGES[0].concepts[1].id
+    state = orchestrator.project_state(db, p)
+    first_row = next(c for c in state["stages"][0]["concepts"] if c["id"] == first)
+    assert first_row["needs_review"] is True
 
 
 def test_fast_track_and_mastery(db, llm):
