@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Socratic Project Tutor (MVP)
 
 An AI tutor that walks students through the **design phase** of their own project — requirements,
@@ -101,3 +102,7 @@ tests/             pytest suite using the mock client
 - Implementation stages (backend, frontend, testing, deployment) and fill-the-gap code releases.
 - Viva generator, spaced review, and the interview practice mode (e.g. "Design an SMS notification system").
 - React frontend — this MVP uses plain HTML/JS so it runs without a build step.
+=======
+# Socratic-AI-Tutor
+Students are questioned to make them understand their depth and then help to create the application desired
+>>>>>>> 8fb166598dd18893653327eb8634436235b43418
